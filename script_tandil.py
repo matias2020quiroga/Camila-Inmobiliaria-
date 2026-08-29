@@ -36,20 +36,21 @@ def consultar_servicios_sanitarios():
         f_out.write("=" * 55 + "\n\n")
 
         try:
-            # Recorrer todas las filas desde la fila 2
-            for row in range(2, sheet.max_row + 1):
-                val_usuario = sheet.cell(row=row, column=1).value
-                val_direccion = sheet.cell(row=row, column=2).value
-                val_servicio = sheet.cell(row=row, column=3).value
+            for row in range(1, sheet.max_row + 1):
+                val_col1 = sheet.cell(row=row, column=1).value
+                val_col2 = sheet.cell(row=row, column=2).value
+                val_col3 = sheet.cell(row=row, column=3).value
 
-                num_cuenta = formatear_texto(val_servicio)
-                
-                # Si no hay número de cuenta en la Columna C, salta la fila
-                if not num_cuenta or num_cuenta.lower() == "none" or num_cuenta.lower() == "servicio":
+                str_col1 = formatear_texto(val_col1)
+                str_col3 = formatear_texto(val_col3)
+
+                # Ignorar encabezados o filas vacías
+                if not str_col3 or str_col3.lower() in ["servicio", "nro. cuenta", "cuenta", "none"]:
                     continue
 
-                usuario = formatear_texto(val_usuario) or f"Fila {row}"
-                direccion = formatear_texto(val_direccion) or "Sin Dirección"
+                usuario = str_col1 if str_col1 and str_col1.lower() != "usuario" else f"Fila {row}"
+                direccion = formatear_texto(val_col2) or "Sin Dirección"
+                num_cuenta = str_col3
 
                 # 1. Ingresar a la página principal
                 driver.get(URL_TANDIL)
@@ -87,29 +88,40 @@ def consultar_servicios_sanitarios():
                 except Exception:
                     driver.execute_script("document.querySelector('button').click();")
 
-                time.sleep(3)
+                time.sleep(2.5)
 
-                # 5. Navegar a 'Consultas' -> 'Consulta de deuda'
+                # 5. NAVEGACIÓN ROBUSTA A 'CONSULTA DE DEUDA'
                 try:
-                    btn_consultas = WebDriverWait(driver, 8).until(
-                        EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Consultas')]"))
+                    # Intentar hacer clic desplegando el menú primero
+                    consultas_elem = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Consultas')]"))
                     )
-                    btn_consultas.click()
-                    time.sleep(1.5)
+                    driver.execute_script("arguments[0].click();", consultas_elem)
+                    time.sleep(1)
 
-                    btn_sub_deuda = WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Consulta de deuda')]"))
+                    deuda_elem = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Consulta de deuda')]"))
                     )
-                    btn_sub_deuda.click()
+                    driver.execute_script("arguments[0].click();", deuda_elem)
                     time.sleep(3)
                 except Exception:
-                    pass
+                    # Si falla el clic JS, buscar enlace <a> con el texto
+                    try:
+                        link_deuda = driver.find_element(By.PARTIAL_LINK_TEXT, "Consulta de deuda")
+                        driver.get(link_deuda.get_attribute("href"))
+                        time.sleep(3)
+                    except Exception:
+                        pass
 
-                # 6. Leer tabla y filtrar SERV.SANITAR
+                # 6. Leer la tabla de deudas y filtrar SERV.SANITAR
                 detalles_deuda = []
                 monto_total_sanitar = 0.0
 
                 try:
+                    # Esperar a que la tabla cargue
+                    WebDriverWait(driver, 6).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "table"))
+                    )
                     filas_tabla = driver.find_elements(By.XPATH, "//tr")
                     for fila in filas_tabla:
                         texto_fila = fila.text
@@ -129,9 +141,9 @@ def consultar_servicios_sanitarios():
 
                                 detalles_deuda.append(f"  • Cuota {cuota} (Venc: {vencimiento}): Importe = ${importe_raw}")
                 except Exception as ex_tabla:
-                    detalles_deuda.append(f"  • Error en lectura de tabla: {ex_tabla}")
+                    detalles_deuda.append(f"  • Error/No se cargó tabla: {ex_tabla}")
 
-                # 7. Escribir registro
+                # 7. Escribir datos al archivo de salida
                 if detalles_deuda:
                     resumen = "\n".join(detalles_deuda)
                     linea_monto = f"Total Deuda SERV.SANITAR: ${monto_total_sanitar:,.2f}\n{resumen}"
