@@ -18,14 +18,14 @@ jobs:
     - name: Instalar dependencias
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller openpyxl selenium
+        pip install pyinstaller openpyxl requests beautifulsoup4
 
     - name: Crear ejecutable .EXE
       run: |
-        pyinstaller --onefile --noconsole --collect-submodules selenium script_tandil.py
+        pyinstaller --onefile --noconsole script_tandil.py
 
     - name: Guardar ejecutable como artefacto
       uses: actions/upload-artifact@v4
       with:
-        name: Ejecutable-Tandil-Windows
+        name: Ejecutable-Servicios-Sanitarios
         path: dist/script_tandil.exe
