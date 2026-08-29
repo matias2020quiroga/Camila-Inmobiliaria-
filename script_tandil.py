@@ -1,115 +1,84 @@
-import time
 import openpyxl
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import Select
+import requests
+from bs4 import BeautifulSoup
+import time
 
-# --- CONFIGURACIÓN DE COLUMNAS DEL EXCEL ---
+# --- CONFIGURACIÓN DE COLUMNAS (Excel) ---
 FILA_INICIAL = 4       # Fila donde empiezan los datos
-
-# Asumiendo la estructura del Excel:
-# Columna A: Nombre / Cliente
-# Columna B: Dirección / Inmueble
-# Columna C: Servicios Sanitarios (Cuenta)
-# Columna D: Retributiva de Servicios (Cuenta)
-
-COL_NOMBRE = 1
-COL_DIRECCION = 2
-COL_SERVICIOS = 3
-COL_RETRIBUTIVA = 4
+COL_NOMBRE = 1         # Columna A: Nombre / Cliente
+COL_DIRECCION = 2      # Columna B: Dirección / Inmueble
+COL_SERVICIOS = 3      # Columna C: Cuenta Servicios Sanitarios
 
 EXCEL_FILE = "propiedades.xlsx"
-TXT_OUTPUT = "resultados_tandil.txt"
+TXT_OUTPUT = "resultados_servicios_sanitarios.txt"
 
-def consultar_deuda():
-    wb = openpyxl.load_workbook(EXCEL_FILE)
-    sheet = wb.active
+URL_TANDIL = "https://www.autogestion.tandil.gov.ar/apex/f?p=114:101"
 
-    # Iniciar navegador Chrome
-    driver = webdriver.Chrome()
-    driver.implicitly_wait(5)
-    
-    url = "https://www.autogestion.tandil.gov.ar/apex/f?p=114:101"
+def consultar_servicios_sanitarios():
+    try:
+        wb = openpyxl.load_workbook(EXCEL_FILE)
+        sheet = wb.active
+    except Exception as e:
+        print(f"Error al abrir {EXCEL_FILE}: {e}")
+        return
 
-    # Preparar el archivo TXT para escribir los resultados
     with open(TXT_OUTPUT, "w", encoding="utf-8") as f_out:
-        f_out.write("=== REPORTE DE DEUDAS - TANDIL ===\n")
+        f_out.write("=== REPORTE DE DEUDAS - SERVICIOS SANITARIOS ===\n")
         f_out.write(f"Fecha de consulta: {time.strftime('%d/%m/%Y %H:%M')}\n")
-        f_out.write("=" * 40 + "\n\n")
+        f_out.write("=" * 50 + "\n\n")
 
-        try:
-            for row in range(FILA_INICIAL, sheet.max_row + 1):
-                nombre = sheet.cell(row=row, column=COL_NOMBRE).value or "Sin Nombre"
-                direccion = sheet.cell(row=row, column=COL_DIRECCION).value or "Sin Dirección"
-                val_servicio = sheet.cell(row=row, column=COL_SERVICIOS).value
-                val_retributiva = sheet.cell(row=row, column=COL_RETRIBUTIVA).value
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
 
-                num_cuenta = None
-                tipo_tasa = None
+        for row in range(FILA_INICIAL, sheet.max_row + 1):
+            nombre = str(sheet.cell(row=row, column=COL_NOMBRE).value or "Sin Nombre").strip()
+            direccion = str(sheet.cell(row=row, column=COL_DIRECCION).value or "Sin Dirección").strip()
+            val_servicio = sheet.cell(row=row, column=COL_SERVICIOS).value
 
-                # Determinar cuál columna contiene el número de cuenta
-                if val_servicio is not None and str(val_servicio).strip() != "":
-                    num_cuenta = str(int(val_servicio) if isinstance(val_servicio, float) else val_servicio).strip()
-                    tipo_tasa = "SERVICIOS SANITARIOS"
-                elif val_retributiva is not None and str(val_retributiva).strip() != "":
-                    num_cuenta = str(int(val_retributiva) if isinstance(val_retributiva, float) else val_retributiva).strip()
-                    tipo_tasa = "RETRIBUTIVA DE SERVICIOS"
-                else:
-                    continue  # Fila vacía, pasa a la siguiente
+            if val_servicio is None or str(val_servicio).strip() == "":
+                continue  # Salta filas sin cuenta de Servicios Sanitarios
 
-                driver.get(url)
+            num_cuenta = str(int(val_servicio) if isinstance(val_servicio, float) else val_servicio).strip()
 
-                # 1. Seleccionar la tasa en el desplegable
-                dropdown_elem = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "select"))
-                )
-                select_tasa = Select(dropdown_elem)
+            try:
+                # 1. Obtener página inicial
+                resp_get = session.get(URL_TANDIL, timeout=10)
+                soup = BeautifulSoup(resp_get.text, 'html.parser')
 
-                # Buscar la opción correspondiente en el menú desplegable
-                opcion_encontrada = False
-                for option in select_tasa.options:
-                    if tipo_tasa.lower() in option.text.lower():
-                        select_tasa.select_by_visible_text(option.text)
-                        opcion_encontrada = True
+                # 2. Preparar consulta enviando número de cuenta y tipo de tasa fijo
+                payload = {
+                    "P101_TIPO_IMPUESTO": "SERVICIOS SANITARIOS",
+                    "P101_CUENTA": num_cuenta
+                }
+
+                resp_post = session.post(URL_TANDIL, data=payload, timeout=10)
+                soup_res = BeautifulSoup(resp_post.text, 'html.parser')
+
+                # 3. Buscar el texto con el monto/deuda
+                monto_texto = "Sin Deuda / No Encontrado"
+                for elem in soup_res.find_all(text=True):
+                    if "$" in elem:
+                        monto_texto = elem.strip()
                         break
 
-                # 2. Ingresar la cuenta en el campo de texto
-                input_cuenta = driver.find_element(By.CSS_SELECTOR, "input[type='text']")
-                input_cuenta.clear()
-                input_cuenta.send_keys(num_cuenta)
+            except Exception as ex:
+                monto_texto = f"Error de consulta: {ex}"
 
-                # 3. Hacer clic en Consultar
-                btn_buscar = driver.find_element(By.XPATH, "//button[contains(text(), 'Consultar') or contains(text(), 'Buscar')]")
-                btn_buscar.click()
+            # 4. Guardar en el TXT
+            linea = (
+                f"Cliente: {nombre}\n"
+                f"Dirección: {direccion}\n"
+                f"Tasa: SERVICIOS SANITARIOS\n"
+                f"N° Cuenta: {num_cuenta}\n"
+                f"Monto Deuda: {monto_texto}\n"
+                f"----------------------------------------\n"
+            )
+            f_out.write(linea)
+            f_out.flush()
 
-                time.sleep(3)  # Pausa para la carga de datos
-
-                # 4. Extraer el monto de la respuesta
-                try:
-                    monto_elem = driver.find_element(By.XPATH, "//*[contains(text(), '$')]")
-                    monto_texto = monto_elem.text
-                except Exception:
-                    monto_texto = "Sin Deuda / No Encontrado"
-
-                # 5. Escribir registro detallado en el TXT
-                resultado_linea = (
-                    f"Cliente: {nombre}\n"
-                    f"Dirección: {direccion}\n"
-                    f"Tasa: {tipo_tasa}\n"
-                    f"N° Cuenta: {num_cuenta}\n"
-                    f"Monto Deuda: {monto_texto}\n"
-                    f"----------------------------------------\n"
-                )
-                
-                f_out.write(resultado_linea)
-                f_out.flush()  # Escribe en disco de inmediato
-                print(f"Procesado: {nombre} - Cuenta {num_cuenta} -> {monto_texto}")
-
-        finally:
-            driver.quit()
-            print("Proceso completado. Resultados guardados en resultados_tandil.txt")
+        print("Consulta finalizada. Se generó 'resultados_servicios_sanitarios.txt'")
 
 if __name__ == "__main__":
-    consultar_deuda()
+    consultar_servicios_sanitarios()
