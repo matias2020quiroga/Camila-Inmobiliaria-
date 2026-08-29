@@ -13,7 +13,7 @@ jobs:
     - name: Configurar Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.11'
+        python-version: '3.10'
 
     - name: Instalar dependencias
       run: |
@@ -22,7 +22,7 @@ jobs:
 
     - name: Crear ejecutable .EXE
       run: |
-        python -m PyInstaller --onefile --noconsole script_tandil.py
+        pyinstaller --onefile --noconsole --collect-submodules selenium script_tandil.py
 
     - name: Guardar ejecutable como artefacto
       uses: actions/upload-artifact@v4
