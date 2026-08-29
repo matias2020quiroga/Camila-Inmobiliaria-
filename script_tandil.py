@@ -6,18 +6,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 
-# --- CONFIGURACIÓN DE COLUMNAS DEL EXCEL ---
-FILA_INICIAL = 2       # Fila 2 (la Fila 1 tiene los títulos)
-COL_USUARIO = 1        # Columna A: usuario
-COL_DIRECCION = 2      # Columna B: dirección
-COL_SERVICIO = 3       # Columna C: Servicio (Nro. de cuenta)
-
 EXCEL_FILE = "propiedades.xlsx"
 TXT_OUTPUT = "resultados_servicios_sanitarios.txt"
-
 URL_TANDIL = "https://www.autogestion.tandil.gov.ar/apex/f?p=114:101"
 
-def formatear_cuenta(val):
+def formatear_texto(val):
     if val is None:
         return ""
     val_str = str(val).strip()
@@ -26,8 +19,12 @@ def formatear_cuenta(val):
     return val_str
 
 def consultar_servicios_sanitarios():
-    wb = openpyxl.load_workbook(EXCEL_FILE)
-    sheet = wb.active
+    try:
+        wb = openpyxl.load_workbook(EXCEL_FILE, data_only=True)
+        sheet = wb.active
+    except Exception as e:
+        print(f"Error al abrir Excel: {e}")
+        return
 
     options = webdriver.ChromeOptions()
     driver = webdriver.Chrome(options=options)
@@ -39,30 +36,20 @@ def consultar_servicios_sanitarios():
         f_out.write("=" * 55 + "\n\n")
 
         try:
-            for row in range(FILA_INICIAL, sheet.max_row + 1):
-                usuario_val = sheet.cell(row=row, column=COL_USUARIO).value
-                # Si la fila entera está vacía (como la E), cortamos el bucle o saltamos
-                if usuario_val is None or str(usuario_val).strip() == "":
+            # Recorrer todas las filas desde la fila 2
+            for row in range(2, sheet.max_row + 1):
+                val_usuario = sheet.cell(row=row, column=1).value
+                val_direccion = sheet.cell(row=row, column=2).value
+                val_servicio = sheet.cell(row=row, column=3).value
+
+                num_cuenta = formatear_texto(val_servicio)
+                
+                # Si no hay número de cuenta en la Columna C, salta la fila
+                if not num_cuenta or num_cuenta.lower() == "none" or num_cuenta.lower() == "servicio":
                     continue
 
-                usuario = str(usuario_val).strip()
-                direccion = str(sheet.cell(row=row, column=COL_DIRECCION).value or "Sin Dirección").strip()
-                val_servicio = sheet.cell(row=row, column=COL_SERVICIO).value
-
-                num_cuenta = formatear_cuenta(val_servicio)
-
-                # Si no hay número de cuenta válido, lo registra como omitido y sigue
-                if not num_cuenta or num_cuenta == "None":
-                    registro = (
-                        f"Usuario: {usuario}\n"
-                        f"Dirección: {direccion}\n"
-                        f"N° Cuenta: (Vacío o No especificado)\n"
-                        f"Omitido: No posee número de cuenta en el Excel.\n"
-                        f"-------------------------------------------------------\n"
-                    )
-                    f_out.write(registro)
-                    f_out.flush()
-                    continue
+                usuario = formatear_texto(val_usuario) or f"Fila {row}"
+                direccion = formatear_texto(val_direccion) or "Sin Dirección"
 
                 # 1. Ingresar a la página principal
                 driver.get(URL_TANDIL)
@@ -75,10 +62,10 @@ def consultar_servicios_sanitarios():
                     )
                     input_cuenta.clear()
                     input_cuenta.send_keys(num_cuenta)
-                except Exception as e:
+                except Exception:
                     continue
 
-                # 3. Seleccionar 'Tipo Deuda' buscando la opción de sanitarios
+                # 3. Seleccionar 'Tipo Deuda'
                 try:
                     dropdown_elem = driver.find_element(By.TAG_NAME, "select")
                     select_tasa = Select(dropdown_elem)
@@ -91,19 +78,18 @@ def consultar_servicios_sanitarios():
 
                 time.sleep(1)
 
-                # 4. Clic en 'Iniciar Sesión' con selector robusto por clase o texto
+                # 4. Clic en 'Iniciar Sesión'
                 try:
                     btn_iniciar = WebDriverWait(driver, 10).until(
                         EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Iniciar') or contains(., 'Sesión')] | //input[@type='submit' or @type='button']"))
                     )
                     btn_iniciar.click()
                 except Exception:
-                    # Intento alternativo por si cambia la estructura del botón
                     driver.execute_script("document.querySelector('button').click();")
 
                 time.sleep(3)
 
-                # 5. Desplegar menú 'Consultas' a la izquierda y hacer clic en 'Consulta de deuda'
+                # 5. Navegar a 'Consultas' -> 'Consulta de deuda'
                 try:
                     btn_consultas = WebDriverWait(driver, 8).until(
                         EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Consultas')]"))
@@ -119,7 +105,7 @@ def consultar_servicios_sanitarios():
                 except Exception:
                     pass
 
-                # 6. Leer la tabla y filtrar estrictamente SERV.SANITAR
+                # 6. Leer tabla y filtrar SERV.SANITAR
                 detalles_deuda = []
                 monto_total_sanitar = 0.0
 
@@ -145,7 +131,7 @@ def consultar_servicios_sanitarios():
                 except Exception as ex_tabla:
                     detalles_deuda.append(f"  • Error en lectura de tabla: {ex_tabla}")
 
-                # 7. Guardar en el reporte .txt
+                # 7. Escribir registro
                 if detalles_deuda:
                     resumen = "\n".join(detalles_deuda)
                     linea_monto = f"Total Deuda SERV.SANITAR: ${monto_total_sanitar:,.2f}\n{resumen}"
