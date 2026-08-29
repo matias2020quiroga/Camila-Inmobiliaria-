@@ -36,7 +36,7 @@ def consultar_servicios_sanitarios():
         f_out.write("=" * 55 + "\n\n")
 
         try:
-            # Leer filas desde la fila 2 (evitando encabezados)
+            # Recorrer filas desde la fila 2
             for row in range(2, sheet.max_row + 1):
                 val_usuario = sheet.cell(row=row, column=1).value
                 val_direccion = sheet.cell(row=row, column=2).value
@@ -44,7 +44,7 @@ def consultar_servicios_sanitarios():
 
                 num_cuenta = formatear_texto(val_servicio)
 
-                # Si no hay número de cuenta en la celda C, salta la fila
+                # Saltar filas sin número de cuenta
                 if not num_cuenta or num_cuenta.lower() in ["none", "servicio", "cuenta", ""]:
                     continue
 
@@ -78,7 +78,7 @@ def consultar_servicios_sanitarios():
 
                 time.sleep(1)
 
-                # 4. Iniciar Sesión
+                # 4. Iniciar Sesión (Ingresa directamente a 'Generar compr. pago')
                 try:
                     btn_iniciar = WebDriverWait(driver, 10).until(
                         EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Iniciar') or contains(., 'Sesión')] | //input[@type='submit' or @type='button']"))
@@ -89,36 +89,12 @@ def consultar_servicios_sanitarios():
 
                 time.sleep(3)
 
-                # 5. DESPLEGAR Y HACER CLIC EN 'CONSULTA DE DEUDA' VIA JAVASCRIPT DIRECTO
-                try:
-                    # Ejecutar la expansión del menú de árbol y el click simultáneo
-                    driver.execute_script("""
-                        // Forzar la apertura del nodo del menú desplegable 'Consultas'
-                        var treeItems = document.querySelectorAll('.a-TreeView-toggle, .a-TreeView-node');
-                        treeItems.forEach(function(item) { item.click(); });
-                    """)
-                    time.sleep(1)
-
-                    # Clic directo en el ítem 'Consulta de deuda'
-                    driver.execute_script("""
-                        var links = document.querySelectorAll('a, span');
-                        for (var i = 0; i < links.length; i++) {
-                            if (links[i].innerText.trim().includes('Consulta de deuda')) {
-                                links[i].click();
-                                break;
-                            }
-                        }
-                    """)
-                    time.sleep(4)
-                except Exception:
-                    pass
-
-                # 6. Leer los importes y cuotas de SERV.SANITAR
+                # 5. Leer la tabla de 'Generar compr. pago' directamente
                 detalles_deuda = []
                 monto_total_sanitar = 0.0
 
                 try:
-                    # Esperar la aparición de la tabla con los datos
+                    # Esperar la aparición de la tabla
                     WebDriverWait(driver, 8).until(
                         EC.presence_of_element_located((By.XPATH, "//table//td"))
                     )
@@ -127,10 +103,12 @@ def consultar_servicios_sanitarios():
                         texto_fila = fila.text
                         if "SERV.SANITAR" in texto_fila:
                             columnas = fila.find_elements(By.TAG_NAME, "td")
-                            if len(columnas) >= 6:
-                                cuota = columnas[3].text.strip()
-                                vencimiento = columnas[4].text.strip()
-                                importe_raw = columnas[5].text.strip()
+                            
+                            # Estructura: Checkbox(0), Cuenta(1), Vencimiento(2), Tasa(3), Total(4)
+                            if len(columnas) >= 5:
+                                vencimiento = columnas[2].text.strip()
+                                tasa_info = columnas[3].text.strip() # Ej: SERV.SANITAR 10 - 2026
+                                importe_raw = columnas[4].text.strip() # Columna 'Total' (Ej: 19,331.32)
                                 
                                 importe_clean = importe_raw.replace(".", "").replace(",", ".")
                                 try:
@@ -139,11 +117,11 @@ def consultar_servicios_sanitarios():
                                 except ValueError:
                                     pass
 
-                                detalles_deuda.append(f"  • Cuota {cuota} (Venc: {vencimiento}): Importe = ${importe_raw}")
+                                detalles_deuda.append(f"  • {tasa_info} (Venc: {vencimiento}): Total = ${importe_raw}")
                 except Exception as ex_tabla:
                     detalles_deuda.append(f"  • Error en lectura de tabla: {ex_tabla}")
 
-                # 7. Escribir resultados en el TXT
+                # 6. Escribir en el TXT
                 if detalles_deuda:
                     resumen = "\n".join(detalles_deuda)
                     linea_monto = f"Total Deuda SERV.SANITAR: ${monto_total_sanitar:,.2f}\n{resumen}"
