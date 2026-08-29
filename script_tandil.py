@@ -2,30 +2,34 @@ import time
 import openpyxl
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select
 
-FILA_INICIAL = 4       # Fila donde empiezan los datos
-COL_NOMBRE = 1         # Columna A
-COL_DIRECCION = 2      # Columna B
-COL_SERVICIOS = 3      # Columna C
+# --- CONFIGURACIÓN DE COLUMNAS DEL EXCEL (Basado en la nueva imagen) ---
+FILA_INICIAL = 2       # Fila 2 (la Fila 1 contiene 'usuario', 'dirección', 'Servicio'...)
+COL_USUARIO = 1        # Columna A: usuario
+COL_DIRECCION = 2      # Columna B: dirección
+COL_SERVICIO = 3       # Columna C: Servicio (Nro. de cuenta)
 
 EXCEL_FILE = "propiedades.xlsx"
 TXT_OUTPUT = "resultados_servicios_sanitarios.txt"
 
 URL_TANDIL = "https://www.autogestion.tandil.gov.ar/apex/f?p=114:101"
 
+def formatear_cuenta(val):
+    if val is None:
+        return ""
+    val_str = str(val).strip()
+    if val_str.endswith(".0"):
+        val_str = val_str[:-2]
+    return val_str
+
 def consultar_servicios_sanitarios():
     wb = openpyxl.load_workbook(EXCEL_FILE)
     sheet = wb.active
 
     options = webdriver.ChromeOptions()
-    options.add_argument("--headless=new")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-
     driver = webdriver.Chrome(options=options)
     driver.implicitly_wait(5)
 
@@ -36,52 +40,61 @@ def consultar_servicios_sanitarios():
 
         try:
             for row in range(FILA_INICIAL, sheet.max_row + 1):
-                nombre = str(sheet.cell(row=row, column=COL_NOMBRE).value or "Sin Nombre").strip()
+                usuario = str(sheet.cell(row=row, column=COL_USUARIO).value or "Sin Nombre").strip()
                 direccion = str(sheet.cell(row=row, column=COL_DIRECCION).value or "Sin Dirección").strip()
-                val_servicio = sheet.cell(row=row, column=COL_SERVICIOS).value
+                val_servicio = sheet.cell(row=row, column=COL_SERVICIO).value
 
-                if val_servicio is None or str(val_servicio).strip() == "":
+                num_cuenta = formatear_cuenta(val_servicio)
+
+                # Si la celda de la cuenta/servicio está vacía, pasa al siguiente
+                if not num_cuenta:
                     continue
 
-                num_cuenta = str(int(val_servicio) if isinstance(val_servicio, float) else val_servicio).strip()
-
+                # 1. Ingresar a la página principal
                 driver.get(URL_TANDIL)
+                time.sleep(1)
 
-                # 1. Seleccionar tipo de tasa
-                dropdown_elem = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "select"))
-                )
-                select_tasa = Select(dropdown_elem)
-                for option in select_tasa.options:
-                    if "sanitar" in option.text.lower():
-                        select_tasa.select_by_visible_text(option.text)
-                        break
-
-                # 2. Ingresar número de cuenta
+                # 2. Completar Nro. Cuenta / Patente / Código
                 input_cuenta = WebDriverWait(driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text']"))
                 )
                 input_cuenta.clear()
                 input_cuenta.send_keys(num_cuenta)
 
-                # 3. Hacer clic en consultar mediante selector amplio o tecla ENTER
-                try:
-                    btn = driver.find_element(By.XPATH, "//*[contains(@class, 'button') or contains(text(), 'Consultar') or contains(text(), 'Buscar') or contains(@id, 'BTN') or contains(@id, 'SUBMIT')]")
-                    btn.click()
-                except Exception:
-                    input_cuenta.send_keys(Keys.ENTER)
+                # 3. Seleccionar 'Tipo Deuda'
+                dropdown_elem = driver.find_element(By.TAG_NAME, "select")
+                select_tasa = Select(dropdown_elem)
+                
+                for option in select_tasa.options:
+                    if "sanitar" in option.text.lower():
+                        select_tasa.select_by_visible_text(option.text)
+                        break
 
+                time.sleep(1)
+
+                # 4. Clic en 'Iniciar Sesión'
+                btn_iniciar = driver.find_element(By.XPATH, "//button[contains(text(), 'Iniciar') or contains(text(), 'Sesión')] | //input[@type='button' or @type='submit']")
+                btn_iniciar.click()
                 time.sleep(3)
 
-                # 4. Intentar ingresar a la sección de Consultas/Detalle si aplica
+                # 5. Desplegar menú 'Consultas' a la izquierda
                 try:
-                    btn_consultas = driver.find_element(By.XPATH, "//*[contains(text(), 'Consultas')]")
+                    btn_consultas = WebDriverWait(driver, 8).until(
+                        EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Consultas')]"))
+                    )
                     btn_consultas.click()
-                    time.sleep(2)
-                except Exception:
-                    pass
+                    time.sleep(1.5)
 
-                # 5. Mapear tabla de deudas para SERV.SANITAR
+                    # 6. Hacer clic en sub-menú 'Consulta de deuda'
+                    btn_sub_deuda = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'Consulta de deuda')]"))
+                    )
+                    btn_sub_deuda.click()
+                    time.sleep(3)
+                except Exception:
+                    pass  # En caso de ingresar directamente al reporte
+
+                # 7. Leer la tabla y filtrar estrictamente SERV.SANITAR
                 detalles_deuda = []
                 monto_total_sanitar = 0.0
 
@@ -89,24 +102,28 @@ def consultar_servicios_sanitarios():
                     filas_tabla = driver.find_elements(By.XPATH, "//tr")
                     for fila in filas_tabla:
                         texto_fila = fila.text
+                        # Validar si la fila contiene 'SERV.SANITAR'
                         if "SERV.SANITAR" in texto_fila:
                             columnas = fila.find_elements(By.TAG_NAME, "td")
+                            # Estructura: Año(0), Tasa(1), Desc. Tasa(2), Cuota(3), Vencimiento(4), Importe(5), Actualizado(6)...
                             if len(columnas) >= 6:
                                 cuota = columnas[3].text.strip()
                                 vencimiento = columnas[4].text.strip()
-                                actualizado_raw = columnas[6].text.strip()
-                                actualizado_clean = actualizado_raw.replace(".", "").replace(",", ".")
+                                importe_raw = columnas[5].text.strip()  # Toma la columna 'Importe' marcada en tu imagen
                                 
+                                # Convertir a float para acumular
+                                importe_clean = importe_raw.replace(".", "").replace(",", ".")
                                 try:
-                                    monto_float = float(actualizado_clean)
+                                    monto_float = float(importe_clean)
                                     monto_total_sanitar += monto_float
                                 except ValueError:
                                     pass
 
-                                detalles_deuda.append(f"  • Cuota {cuota} (Venc: {vencimiento}): ${actualizado_raw}")
+                                detalles_deuda.append(f"  • Cuota {cuota} (Venc: {vencimiento}): Importe = ${importe_raw}")
                 except Exception as ex_tabla:
                     detalles_deuda.append(f"  • Error en lectura de tabla: {ex_tabla}")
 
+                # 8. Dar formato e imprimir al reporte .txt
                 if detalles_deuda:
                     resumen = "\n".join(detalles_deuda)
                     linea_monto = f"Total Deuda SERV.SANITAR: ${monto_total_sanitar:,.2f}\n{resumen}"
@@ -114,7 +131,7 @@ def consultar_servicios_sanitarios():
                     linea_monto = "Sin Deuda en SERV.SANITAR / No Encontrado"
 
                 registro = (
-                    f"Cliente: {nombre}\n"
+                    f"Usuario: {usuario}\n"
                     f"Dirección: {direccion}\n"
                     f"N° Cuenta: {num_cuenta}\n"
                     f"{linea_monto}\n"
