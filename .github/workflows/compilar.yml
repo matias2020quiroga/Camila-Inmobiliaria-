@@ -1,4 +1,4 @@
-name: Compilar ejecutable para Windows
+name: Compilar ejecutables para Windows
 
 on: [workflow_dispatch]
 
@@ -18,14 +18,15 @@ jobs:
     - name: Instalar dependencias
       run: |
         python -m pip install --upgrade pip
-        pip install pyinstaller openpyxl selenium
+        pip install pyinstaller openpyxl selenium webdriver-manager
 
-    - name: Crear ejecutable .EXE
+    - name: Crear ejecutables .EXE
       run: |
-        pyinstaller --onefile --noconsole --collect-submodules selenium script_tandil.py
+        pyinstaller --onefile --collect-submodules selenium script_tandil.py
+        pyinstaller --onefile --collect-submodules selenium script_retributiva.py
 
-    - name: Guardar ejecutable como artefacto
+    - name: Guardar ejecutables como artefacto
       uses: actions/upload-artifact@v4
       with:
-        name: Ejecutable-Servicios-Sanitarios
-        path: dist/script_tandil.exe
+        name: Ejecutables-Tandil
+        path: dist/*.exe
