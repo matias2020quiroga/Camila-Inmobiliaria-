@@ -1,206 +1,160 @@
-import datetime
-import os
-import re
 import time
 import openpyxl
-
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.support.ui import Select
 
-URL_CONSULTA = "TU_URL_AQUI"  # Reemplazar por la URL del portal municipal
 EXCEL_FILE = "propiedades.xlsx"
-TXT_OUTPUT = "reporte_deudas_sanitarios.txt"
+TXT_OUTPUT = "resultados_servicios_sanitarios.txt"
+URL_TANDIL = "https://www.autogestion.tandil.gov.ar/apex/f?p=114:101"
 
+def formatear_texto(val):
+    if val is None:
+        return ""
+    val_str = str(val).strip()
+    if val_str.endswith(".0"):
+        val_str = val_str[:-2]
+    return val_str
 
-def parse_monto(texto_monto):
-    """Limpia cadenas de texto con montos y devuelve un float."""
-    if not texto_monto:
-        return 0.0
-    s = re.sub(r'[^\d.,]', '', str(texto_monto))
-    if not s:
-        return 0.0
-    if ',' in s and '.' in s:
-        if s.rfind('.') > s.rfind(','):
-            s = s.replace(',', '')
-        else:
-            s = s.replace('.', '').replace(',', '.')
-    elif ',' in s:
-        parts = s.split(',')
-        if len(parts[-1]) == 2:
-            s = s.replace('.', '').replace(',', '.')
-        else:
-            s = s.replace(',', '')
+def consultar_servicios_sanitarios():
     try:
-        return float(s)
-    except ValueError:
-        return 0.0
+        wb = openpyxl.load_workbook(EXCEL_FILE, data_only=True)
+        sheet = wb.active
+    except Exception as e:
+        print(f"Error al abrir Excel: {e}")
+        return
 
-
-def extraer_registros_excel(archivo):
-    """Lee el Excel, filtra títulos, completa propietarios heredados y extrae cuentas."""
-    wb = openpyxl.load_workbook(archivo, data_only=True)
-    sheet = wb.active
-
-    registros = []
-    propietario_actual = ""
-
-    for r in range(4, sheet.max_row + 1):
-        u = sheet.cell(row=r, column=1).value
-        d = sheet.cell(row=r, column=2).value
-        c1 = sheet.cell(row=r, column=3).value
-        c2 = sheet.cell(row=r, column=4).value
-
-        # Actualizar propietario si existe en la fila
-        if u and str(u).strip():
-            u_clean = str(u).strip().replace('\n', ' ')
-            if "Propietario" not in u_clean and "Estado de Pago" not in u_clean:
-                propietario_actual = u_clean
-
-        dir_str = str(d).strip() if d else ""
-
-        # Ignorar filas de títulos
-        if "Dirección" in dir_str or "Ubicación" in dir_str:
-            continue
-
-        for c_raw in [c1, c2]:
-            if not c_raw:
-                continue
-            c_str = str(c_raw).strip()
-            if "$ 0,00" in c_str or c_str.lower() == "none" or not c_str:
-                continue
-
-            # Buscar secuencias de 5 a 10 dígitos (cuentas válidas)
-            cuentas_encontradas = re.findall(r'\b\d{5,10}\b', c_str)
-            for acct in cuentas_encontradas:
-                registros.append({
-                    "propietario": propietario_actual,
-                    "direccion": dir_str,
-                    "cuenta": acct
-                })
-
-    return registros
-
-
-def iniciar_driver():
-    """Inicializa una nueva instancia de ChromeDriver."""
     options = webdriver.ChromeOptions()
-    options.add_argument("--start-maximized")
-    options.add_argument("--disable-notifications")
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    return driver
+    driver = webdriver.Chrome(options=options)
+    driver.implicitly_wait(5)
 
+    with open(TXT_OUTPUT, "w", encoding="utf-8") as f_out:
+        f_out.write("=== REPORTE DE DEUDAS - SERVICIOS SANITARIOS ===\n")
+        f_out.write(f"Fecha de consulta: {time.strftime('%d/%m/%Y %H:%M')}\n")
+        f_out.write("=" * 55 + "\n\n")
 
-def procesar_consultas():
-    registros = extraer_registros_excel(EXCEL_FILE)
-    print(f"Cuentas cargadas para procesar: {len(registros)}")
+        try:
+            for row in range(2, sheet.max_row + 1):
+                val_usuario = sheet.cell(row=row, column=1).value
+                val_direccion = sheet.cell(row=row, column=2).value
+                val_servicio = sheet.cell(row=row, column=3).value
 
-    driver = iniciar_driver()
-    lineas_reporte = []
+                num_cuenta = formatear_texto(val_servicio)
 
-    fecha_hora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-    lineas_reporte.append("=== REPORTE DE DEUDAS - SERVICIOS SANITARIOS ===")
-    lineas_reporte.append(f"Fecha de consulta: {fecha_hora}")
-    lineas_reporte.append("=" * 55 + "\n")
+                if not num_cuenta or num_cuenta.lower() in ["none", "servicio", "cuenta", ""]:
+                    continue
 
-    for idx, reg in enumerate(registros, 1):
-        user = reg["propietario"]
-        direccion = reg["direccion"]
-        cuenta = reg["cuenta"]
+                usuario = formatear_texto(val_usuario) or f"Usuario_{row}"
+                direccion = formatear_texto(val_direccion) or "Sin Dirección"
 
-        print(f"[{idx}/{len(registros)}] Procesando: {user} | Cuenta: {cuenta}")
+                # 1. Cargar la página inicial
+                driver.get(URL_TANDIL)
+                time.sleep(1.5)
 
-        intento = 0
-        exito = False
-        comprobantes = []
-        error_msg = None
+                # 2. Completar Nro. Cuenta
+                try:
+                    input_cuenta = WebDriverWait(driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text']"))
+                    )
+                    input_cuenta.clear()
+                    input_cuenta.send_keys(num_cuenta)
+                except Exception:
+                    continue
 
-        while intento < 2 and not exito:
-            intento += 1
-            try:
-                driver.get(URL_CONSULTA)
+                # 3. Seleccionar 'Tipo Deuda'
+                try:
+                    dropdown_elem = driver.find_element(By.TAG_NAME, "select")
+                    select_tasa = Select(dropdown_elem)
+                    for option in select_tasa.options:
+                        if "sanitar" in option.text.lower():
+                            select_tasa.select_by_visible_text(option.text)
+                            break
+                except Exception:
+                    pass
 
-                # 1. Localizar input de cuenta y botón de búsqueda (Ajustar Selectores)
-                input_cuenta = WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "P1_CUENTA"))
+                time.sleep(1)
+
+                # 4. Iniciar Sesión
+                try:
+                    btn_iniciar = WebDriverWait(driver, 10).until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(., 'Iniciar') or contains(., 'Sesión')] | //input[@type='submit' or @type='button']"))
+                    )
+                    btn_iniciar.click()
+                except Exception:
+                    driver.execute_script("document.querySelector('button').click();")
+
+                time.sleep(3)
+
+                # 5. FORZAR CLIC EN 'GENERAR COMPR. PAGO' Y ESPERAR CARGA
+                try:
+                    driver.execute_script("""
+                        var elem = document.querySelectorAll('a, span, li');
+                        for (var i = 0; i < elem.length; i++) {
+                            if (elem[i].innerText.includes('Generar compr')) {
+                                elem[i].click();
+                                break;
+                            }
+                        }
+                    """)
+                    time.sleep(3)
+                except Exception:
+                    pass
+
+                # 6. Leer la tabla de comprobantes de pago
+                detalles_deuda = []
+                monto_total_sanitar = 0.0
+
+                try:
+                    # Esperar hasta 12 segundos a que exista la celda con la tasa o datos
+                    WebDriverWait(driver, 12).until(
+                        EC.presence_of_element_located((By.XPATH, "//table//td[contains(., 'SERV.SANITAR') or contains(., '39379001') or contains(., '$')] | //td"))
+                    )
+                    time.sleep(1.5)  # Pausa de seguridad para renderizado completo de AJAX
+
+                    filas_tabla = driver.find_elements(By.XPATH, "//tr")
+                    for fila in filas_tabla:
+                        texto_fila = fila.text
+                        if "SERV.SANITAR" in texto_fila:
+                            columnas = fila.find_elements(By.TAG_NAME, "td")
+                            
+                            # Estructura: Imprimir/Checkbox(0), Cuenta(1), Vencimiento(2), Tasa(3), Total(4)
+                            if len(columnas) >= 5:
+                                vencimiento = columnas[2].text.strip()
+                                tasa_info = columnas[3].text.strip()
+                                importe_raw = columnas[4].text.strip()
+                                
+                                importe_clean = importe_raw.replace(".", "").replace(",", ".")
+                                try:
+                                    monto_float = float(importe_clean)
+                                    monto_total_sanitar += monto_float
+                                except ValueError:
+                                    pass
+
+                                detalles_deuda.append(f"  • {tasa_info} (Venc: {vencimiento}): Total = ${importe_raw}")
+                except Exception as ex_tabla:
+                    detalles_deuda.append(f"  • Error en lectura de tabla: {ex_tabla}")
+
+                # 7. Escribir resultados
+                if detalles_deuda:
+                    resumen = "\n".join(detalles_deuda)
+                    linea_monto = f"Total Deuda SERV.SANITAR: ${monto_total_sanitar:,.2f}\n{resumen}"
+                else:
+                    linea_monto = "Sin Deuda en SERV.SANITAR / No Encontrado"
+
+                registro = (
+                    f"Usuario: {usuario}\n"
+                    f"Dirección: {direccion}\n"
+                    f"N° Cuenta: {num_cuenta}\n"
+                    f"{linea_monto}\n"
+                    f"-------------------------------------------------------\n"
                 )
-                input_cuenta.clear()
-                input_cuenta.send_keys(cuenta)
+                f_out.write(registro)
+                f_out.flush()
 
-                btn_buscar = driver.find_element(By.ID, "P1_BUSCAR")
-                btn_buscar.click()
-
-                # 2. Esperar tabla de resultados o mensaje de sin deudas
-                time.sleep(2)
-                WebDriverWait(driver, 10).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "a-IRR-table"))
-                )
-
-                # 3. Leer filas de la grilla
-                filas = driver.find_elements(By.XPATH, "//table[contains(@class,'a-IRR-table')]/tbody/tr")
-                for f in filas:
-                    cols = f.find_elements(By.TAG_NAME, "td")
-                    if len(cols) >= 5:
-                        concepto = cols[1].text.strip()
-                        vencimiento = cols[3].text.strip()
-                        monto_txt = cols[4].text.strip()
-
-                        if "SERV" in concepto.upper() or "SANITAR" in concepto.upper():
-                            monto_val = parse_monto(monto_txt)
-                            comprobantes.append({
-                                "concepto": concepto,
-                                "vencimiento": vencimiento,
-                                "monto_txt": monto_txt,
-                                "monto_val": monto_val
-                            })
-
-                exito = True
-
-            except Exception as e:
-                error_msg = str(e).split('\n')[0]
-                if "invalid session id" in error_msg or "disconnected" in error_msg:
-                    print("Sesión de navegador perdida. Reiniciando driver...")
-                    try:
-                        driver.quit()
-                    except Exception:
-                        pass
-                    driver = iniciar_driver()
-
-        # Armar texto del reporte para la cuenta
-        total_deuda = sum(c["monto_val"] for c in comprobantes)
-
-        lineas_reporte.append(f"Usuario: {user}")
-        lineas_reporte.append(f"Dirección: {direccion}")
-        lineas_reporte.append(f"N° Cuenta: {cuenta}")
-        lineas_reporte.append(f"Total Deuda SERV.SANITAR: ${total_deuda:,.2f}")
-
-        if comprobantes:
-            for c in comprobantes:
-                lineas_reporte.append(
-                    f"  • {c['concepto']} (Venc: {c['vencimiento']}): Total = {c['monto_txt']}"
-                )
-        elif error_msg:
-            lineas_reporte.append(f"  • Error en lectura: {error_msg}")
-        else:
-            lineas_reporte.append("  • Sin deudas registradas.")
-
-        lineas_reporte.append("-" * 55)
-
-    try:
-        driver.quit()
-    except Exception:
-        pass
-
-    # Guardar archivo .txt
-    with open(TXT_OUTPUT, "w", encoding="utf-8") as f:
-        f.write("\n".join(lineas_reporte))
-
-    print(f"\nProceso finalizado. Reporte generado en: {TXT_OUTPUT}")
-
+        finally:
+            driver.quit()
 
 if __name__ == "__main__":
-    procesar_consultas()
+    consultar_servicios_sanitarios()
