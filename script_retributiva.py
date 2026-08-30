@@ -20,7 +20,7 @@ def formatear_texto(val):
     return val_str
 
 def parse_monto(texto_monto):
-    """Convierte importes en texto ($85,535.92 o $85.535,92) a float correctamente."""
+    """Convierte importes en texto (54,611.19 o 54.611,19) a float correctamente."""
     if not texto_monto:
         return 0.0
     s = re.sub(r'[^\d.,]', '', str(texto_monto))
@@ -63,12 +63,13 @@ def consultar_retributiva_servicios():
             for row in range(2, sheet.max_row + 1):
                 val_usuario = sheet.cell(row=row, column=1).value
                 val_direccion = sheet.cell(row=row, column=2).value
-                # CAMBIO: Toma la cuenta de la Columna 4
+                # Toma la cuenta de la Columna 4
                 val_servicio = sheet.cell(row=row, column=4).value
 
                 num_cuenta = formatear_texto(val_servicio)
 
-                if not num_cuenta or num_cuenta.lower() in ["none", "servicio", "cuenta", ""]:
+                # Descartar filas vacías o encabezados que no contengan números
+                if not num_cuenta or not re.search(r'\d+', num_cuenta):
                     continue
 
                 usuario = formatear_texto(val_usuario) or f"Usuario_{row}"
@@ -132,27 +133,30 @@ def consultar_retributiva_servicios():
 
                 try:
                     WebDriverWait(driver, 12).until(
-                        EC.presence_of_element_located((By.XPATH, "//table//td[contains(., 'RETRIB') or contains(., '$')] | //td"))
+                        EC.presence_of_element_located((By.XPATH, "//table//tr[td]"))
                     )
                     time.sleep(1.5)
 
                     filas_tabla = driver.find_elements(By.XPATH, "//tr")
                     for fila in filas_tabla:
-                        texto_fila = fila.text
-                        if "RETRIB" in texto_fila.upper() or "$" in texto_fila:
+                        texto_fila = fila.text.upper()
+                        # Buscar filas con 'RETR' (cubre RETR.SERVIC.) o que pertenezcan a la cuenta
+                        if "RETR" in texto_fila or num_cuenta in texto_fila:
                             columnas = fila.find_elements(By.TAG_NAME, "td")
                             
-                            # Estructura: Checkbox(0), Cuenta(1), Vencimiento(2), Tasa(3), Total(4)
+                            # Estructura: Checkbox/Imprimir(0), Cuenta(1), Vencimiento(2), Tasa(3), Total(4)
                             if len(columnas) >= 5:
                                 vencimiento = columnas[2].text.strip()
                                 tasa_info = columnas[3].text.strip()
                                 importe_raw = columnas[4].text.strip()
                                 monto_float = parse_monto(importe_raw)
 
-                                registros_deuda.append({
-                                    "texto": f"  • {tasa_info} (Venc: {vencimiento}): Total = ${importe_raw}",
-                                    "monto": monto_float
-                                })
+                                # Validar que la fila contenga datos reales y no el encabezado
+                                if tasa_info and importe_raw and "VENCIMIENTO" not in vencimiento.upper():
+                                    registros_deuda.append({
+                                        "texto": f"  • {tasa_info} (Venc: {vencimiento}): Total = ${importe_raw}",
+                                        "monto": monto_float
+                                    })
                 except Exception as ex_tabla:
                     registros_deuda.append({"texto": f"  • Error en lectura de tabla: {ex_tabla}", "monto": 0.0})
 
